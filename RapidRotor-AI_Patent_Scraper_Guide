@@ -1,0 +1,153 @@
+# RapidRotor-AI Patent Landscape Scraping Guide (Team Read-Ahead)
+
+## Purpose: why we built this
+We needed a fast, repeatable way to compile a **target list of patent owners (organizations) and technical experts (inventors)** tied to the RapidRotor-AI problem set. The intent is **customer discovery + technical workflow discovery**: identify credible people/teams who have worked on relevant methods and can validate pain points, solution constraints, and adoption barriers through interviews.
+
+This is not a “perfect patent intelligence platform.” It’s an MVP pipeline to quickly produce an interview-ready contact universe.
+
+---
+
+## Why we chose USPTO (ODP) as the data source
+1. **Authoritative source** – USPTO is the primary US source for patent/application data.  
+2. **API access + automation-friendly** – ODP provides structured endpoints for repeatable queries.  
+3. **Cost and speed** – Avoids paid tools during MVP while still producing high-signal results.  
+4. **Aligned to our immediate goal** – We’re optimizing for *who should we talk to?* not legal prosecution analytics.
+
+---
+
+## What we built (high level)
+An **area-based keyword scraper** that:
+- Queries USPTO ODP for patent applications within a time window (default: last 10 years)
+- Pulls results in batches (commonly 200 per run)
+- Extracts available bibliographic fields from the Patent File Wrapper model
+- Assigns a **local relevance score** (heuristic) from keyword signals
+- Outputs CSVs suitable for analysis + outreach planning
+
+### Key outputs per run
+- **Master CSV** (append + dedupe by `ip_number`, then rescore entire dataset)
+- **Timestamped snapshot CSV** (always written; avoids Excel lock issues)
+- **Top-N shortlist CSV** sorted by `score` desc
+
+---
+
+## Supported keyword areas (scrape “clusters”)
+We use area-specific keyword clusters to mirror the RapidRotor-AI landscape:
+- `rotor_wake` — Rotor wake physics / BVI / hover / airwake / DVE / rotor noise
+- `unsteady_turbulence` — URANS/DES/DDES/IDDES + turbulence and transition models
+- `meshing` — mesh generation, overset/chimera, AMR, geometry automation
+- `rotor_motion` — rotating frames, 6-DOF, blade kinematics, FSI, aeroelasticity
+- `optimization` — adjoint, ROM, surrogate models, UQ, robust design
+- `hpc_accel` — GPU/MPI, multigrid, solver acceleration, near-real-time language
+- `ai_cfd` — PINNs, neural operators, surrogate CFD, multi-fidelity fusion, digital twins
+- `fixed_wing` — high-lift, separation control, boundary layer control, airframe noise
+
+**Why areas:** easier debugging, less API payload risk, and clearer provenance for later analysis.
+
+---
+
+## Variables scraped (dataset schema)
+The scraper produces CSV rows with the following fields. Availability varies by ODP record completeness; some fields may be blank.
+
+| Column | What it is | Source (ODP / local) | Notes |
+|---|---|---|---|
+| `ip_number` | Patent/application identifier used as primary key | ODP: `application_number_text` | Used for **dedupe** across runs/areas |
+| `title` | Invention title (best-effort) | ODP: probed from `application_meta_data.*title*` | May be empty depending on response fields |
+| `filing_date` | Application filing date | ODP: `application_meta_data.filing_date` | ISO date string when present |
+| `inventors` | Inventor name(s) (often first inventor) | ODP: `application_meta_data.first_inventor_name` | MVP uses “first inventor” if that’s what’s returned |
+| `assignees` | Applicant/assignee (often first applicant) | ODP: `application_meta_data.first_applicant_name` | Normalization needed later (org naming varies) |
+| `contact_details` | Lightweight contact/provenance fields | ODP: e.g., `docket_number`, `customer_number` (best-effort) | Not guaranteed; not a full contact record |
+| `abstract` | Abstract text (best-effort) | ODP: probed from `application_meta_data.*abstract*` | Often missing in file wrapper responses |
+| `score` | Local relevance score (heuristic) | Local computed | Signals: CFD terms + aero/rotorcraft + optimization/AI/etc. |
+| `why_scored` | Explanation of keyword hits | Local computed | Comma-separated labels of matched patterns |
+| `area` | Keyword area used in that run | Local assigned | Helpful for clustering and provenance |
+| `source_file` | Which input CSV produced the row | Local assigned in combine step | Added by `combine_clean.py` when merging |
+
+---
+
+## How the scraper evolved (development journey)
+1. **Initial attempt: PatentsView**  
+   Encountered authentication/403 issues. Pivoted to USPTO ODP as the authoritative API.
+2. **ODP model mapping**  
+   Confirmed where key fields live (e.g., `application_number_text`, `application_meta_data.*`).
+3. **Practical constraints**  
+   - Page size limits and payload caps (413 payload too large)  
+   - Windows/Excel file locking on CSV writes  
+   - Field completeness variability
+4. **Batching**  
+   Repeated “pull next N + append + dedupe + rescore” until target dataset size is reached.
+
+---
+
+## How to run the scraper (team workflow)
+### Prereqs
+- Python installed
+- Dependency: `pyuspto`
+- USPTO ODP key set as environment variable
+
+PowerShell:
+```powershell
+$env:USPTO_ODP_API_KEY="YOUR_KEY"
+python .\run.py -h
+```
+
+### Example run: Optimization (anchored to CFD) starting from page 1
+```powershell
+python .\run.py --area optimization --years 10 --add 200 --offset 0 --master outputs\optimization_master.csv --top 500
+```
+
+### Build larger dataset (repeat 10× = ~2000, deduped)
+```powershell
+for ($i=0; $i -lt 10; $i++) {
+  python .\run.py --area optimization --years 10 --add 200 --master outputs\optimization_master.csv --top 500
+}
+```
+
+---
+
+## Data cleaning + combining (7 area outputs → 1 consolidated file)
+We generate independent output files per area, then run a combine/clean step that:
+1. Loads multiple CSVs
+2. Normalizes columns (handles minor differences across output versions)
+3. Removes rows where `score == 0` (default threshold)
+4. Dedupes by `ip_number` (keeps best record)
+5. Writes:
+   - `combined_clean.csv`
+   - `combined_clean_top500.csv`
+   - a report summary of rows read/dropped/kept
+
+**Rationale:** score=0 usually indicates “no signal in extracted fields” for our problem set, so we strip those for interview targeting.
+
+---
+
+## Next steps: convert the dataset into an outreach-ready downselect
+### 1) Normalize entities
+Create two derived rollups:
+- **Inventor table:** inventor_name, patent count, max/avg score, associated assignees, top titles/keywords, area mix  
+- **Organization table:** org_name, patent count, score distribution, dominant technical themes, area mix
+
+### 2) Rank + downselect rubric (recommended)
+- High score density and repeated relevance
+- Diversity across domains (wake + meshing + optimization + AI)
+- Mix of builders (software vendors, OEMs) and users (labs, academia, gov)
+- Accessibility (smaller orgs / labs more responsive)
+- Direct relevance to ARL rotorcraft CFD workflow bottlenecks
+
+### 3) Outreach packet per target
+- 1–2 sentence “why we picked you”
+- 2–3 patent titles/keywords (credibility)
+- 20–30 minute interview ask + H4D / ARL sponsor context
+
+---
+
+## Known limitations
+- ODP field completeness varies; abstract/title may be missing.
+- “First inventor/applicant” may not include full lists.
+- Scoring is heuristic for prioritization, not legal truth.
+- US-centric scope; WIPO/EPO could be added later if needed.
+
+---
+
+## Success criteria (near-term)
+- Consolidated dataset with meaningful signal (non-zero scores)
+- Ranked list of ~25–50 orgs and ~50–100 inventors
+- 10–20 high-quality interviews completed
