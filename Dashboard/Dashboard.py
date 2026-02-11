@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import plotly.express as px
 import numpy as np
+from pathlib import Path
 
 # 1. Page Configuration
 st.set_page_config(page_title="Patent Analysis Dashboard", layout="wide")
@@ -10,8 +11,8 @@ st.set_page_config(page_title="Patent Analysis Dashboard", layout="wide")
 @st.cache_data
 def load_data():
     # Using your specific directory path
-    path = r'C:\Users\gsapp\OneDrive\Desktop\Archive Data Pulls\FILES\Combined_Cleaned_Patents.csv'
-    df = pd.read_csv(path)
+    DATA_PATH = Path(__file__).parent / "data" / "Combined_Cleaned_Patents.csv"
+    df = pd.read_csv(DATA_PATH)
     df['filing_date'] = pd.to_datetime(df['filing_date'], errors='coerce')
     # Fill empty why_scored with 'N/A' to avoid errors during split
     df['why_scored'] = df['why_scored'].fillna('Uncategorized')
@@ -96,4 +97,5 @@ elif view_option == "Keywords (Why Scored)":
 
 # 5. Data Table
 with st.expander("View Filtered Data Table"):
+
     st.write(df)
